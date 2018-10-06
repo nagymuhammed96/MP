@@ -1,0 +1,334 @@
+#include <io.h>
+#include <delay.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <alcd.h>
+   
+    
+int setpoint;
+int Temperature1;
+int Temperature2;
+int rate;
+int rate_threshold;   
+
+void command_LCD (unsigned char X)
+       {
+       PORTC = (PORTC&0x0F)| (X &0xF0);
+       PORTC &=~(1<<0);
+       PORTC &=~(1<<1);
+       PORTC |= (1<<2);
+       delay_us(1);
+       PORTC  &=~(1<<2);
+       delay_us(20);
+       PORTC = (PORTC&0x0F) |(X <<4);
+       PORTC |= (1<<2);
+       delay_us(1);
+       PORTC &= ~ (1<<2); 
+                 }
+   
+
+
+void usart_init(){
+    UCSRC = (1<<URSEL) | (1<<UCSZ1) | (1<<UCSZ0);
+    UCSRB = (1<<TXEN)| (1<<RXEN);
+    UBRRL = 0x33;
+}
+
+void ADC_init(){
+    DDRA = 0x00; // adc input  
+    ADCSRA = 0x87;  //prescaler 128, ADEN,,,, 
+                           /*For any ADC, frequency of conversion (Analog value to Digital value) 
+                           and accuracy of digital output are inversely proportional. 
+                           So for better accuracy of digital output we have to choose lesser frequency.
+                             For lesser ADC clock we are setting the presale of ADC to maximum value (128). 
+                             Since we are using the internal clock of 1MHZ, the clock of ADC will be (1000000/128).*/
+    ADMUX = 0x40; // ADC0 , right adjusted, AVcc voltage   
+}
+
+
+void usart_transmit(char data){
+    while (!(UCSRA & (1<<UDRE)));
+    UDR = data;
+    delay_ms(50);
+}
+
+void sendData(char* str){
+    int i = 0;
+    int len = strlen(str);
+    for (i = 0; i < len; i++ ){
+        usart_transmit(str[i]);
+    }
+}
+
+void check_gsm(){
+    sendData("AT\r");
+    usart_transmit(13); // enter
+    delay_ms(1000);
+}
+
+
+void text_mode(){
+    sendData("AT+CMGF=1\r");
+    usart_transmit(13); // enter
+    delay_ms(1000);
+}
+                    
+
+void message(char* sms, int Temperature){
+    sprintf(sms, "Temperature is  %d ", Temperature);     // I added a space after %d
+    sendData(sms);
+    lcd_puts(sms);      //print in LCD
+    usart_transmit('C');
+    usart_transmit(13);                  
+    delay_ms(1000);
+}
+
+void rate_message(char* msg, int rate){
+    sprintf(msg, "Temperature rise rate is %d ",rate);    // I added a space after %d
+    sendData(msg);
+    lcd_puts(msg);     
+    sendData("C/min");
+    usart_transmit(13);
+    delay_ms(1000);
+}
+
+
+void send_cmgs(){     //message for threshold
+    sendData("AT+CMGS=\"+249909295635\"\r");
+    usart_transmit(13);
+    delay_ms(1000);
+}    
+
+
+void sendSMS(){
+  char* sms;
+  text_mode();
+  send_cmgs();
+  message(sms, Temperature1);
+  usart_transmit(26); // ctrl_Z
+  delay_ms(1000);   
+}
+
+void rate_SMS()
+{   
+    char* msg; //rate message holder
+    send_cmgs();
+    rate_message(msg, rate);
+    
+    usart_transmit(26);
+    delay_ms(1000);
+}
+
+
+char keypad(){
+    int i;
+    int z;
+    
+    DDRB = 0xF0;    //bits 4...7 column inputs, bits 0...3 row outputs
+    PORTB = 0xFF;
+    
+    for(i = 0; i<4; i++){
+       //delay_us(10);
+     if(i == 0)
+        PORTB = 0x7F;
+     else if(i == 1)
+        PORTB = 0xBF;
+     else if(i == 2)
+        PORTB = 0xDF;
+     else PORTB = 0xEF;
+        delay_us(1);
+                    
+         z = PINB & 0x0F;
+        switch (i)
+               {
+               case 0:
+                   if(z == 0x0E)
+                    return '#';
+                   else if(z == 0x0D)
+                    return '3';
+                   else if(z == 0x0B)
+                    return '2';
+                   else if(z == 0x07)
+                    return '1';
+               break;
+
+               case 1:
+                   if(z ==0x0E)
+                    return '#' ;
+                   else if(z == 0x0D)
+                    return '6';
+                   else if(z == 0x0B)
+                    return '5';
+                   else if(z == 0x07)
+                    return '4';
+               break;
+               
+               case 2:
+                    if(z == 0x0E)
+                    return '#';
+                   else if(z == 0x0D)
+                    return '9';
+                   else if(z == 0x0B)
+                    return '8';
+                   else if(z == 0x07)
+                    return '7';
+               break;
+
+               case 3:
+                   if(z == 0x0E)
+                    return '#';
+                   else if(z == 0x0D)
+                    return '#';
+                   else if(z == 0x0B)
+                    return '0';
+                   else if(z == 0x07)
+                    return '*';
+               break;
+               }
+
+    }
+}
+
+
+void main(void)
+{ 
+    //=================================== initialization 
+   char* setpoint_prompt = "Enter setpoint: ";
+   char* rate_threshold_prompt = "Enter rate: ";
+   
+   char tmp1 ;
+   char tmp2;
+       
+   int i = 0;
+   int j = 0;
+   
+   char* str_setpoint;        //store the value of setpoint from keypad
+   char* str_rate_threshold;          //rate message
+         
+   lcd_init(16);
+   usart_init();
+   ADC_init();
+   
+   
+   //==================================== 
+   
+   
+   
+   command_LCD(0x0e); 
+   delay_ms(20);               
+   lcd_puts(setpoint_prompt);
+   lcd_gotoxy(0, 1);    //force cursor to beginning of second line
+   
+   while (keypad() != '#')      // '#' = enter
+   {
+       str_setpoint[i] = keypad();
+       tmp1 = str_setpoint[i];
+       if (str_setpoint[i] != '' && keypad() != '#' && keypad()!='*')
+       { 
+       i++;        
+       lcd_putchar(tmp1);
+       lcd_gotoxy(i,1);
+       delay_ms(500);
+       } 
+       else if (str_setpoint[i]== '*'){
+       i--;
+         lcd_gotoxy(i,1);
+         lcd_putchar('');
+         command_LCD(0x10);
+         delay_ms(500); 
+       } 
+       
+   }
+   
+   
+       lcd_clear(); //clear screen
+       delay_ms(500);
+       lcd_puts(rate_threshold_prompt);
+       lcd_gotoxy(0, 1);
+       delay_ms(500);
+    
+   while (keypad() != '#')      
+   {
+       str_rate_threshold[j] = keypad();
+       tmp2 = str_rate_threshold[j];
+       if (str_rate_threshold[j] != '' && keypad() != '#' && keypad()!='*')
+       { 
+       j++;        
+       lcd_putchar(tmp2);
+       lcd_gotoxy(j,1);
+       delay_ms(500);
+       }  
+       else if (str_setpoint[j]== '*'){
+       j--;
+         lcd_gotoxy(j,1);
+         lcd_putchar('');
+         command_LCD(0x10);
+         delay_ms(500); 
+       } 
+       
+   }  
+       
+       
+    lcd_clear();   
+    delay_ms(30);             
+    command_LCD(0x0e);   
+    delay_ms(30);              
+    setpoint = atoi(str_setpoint);    //convert to int
+    rate_threshold = atoi(str_rate_threshold);
+
+    
+while(1){
+        
+        ADCSRA |= (1<<ADSC); 
+        while (!(ADCSRA & (1<<ADIF))); 
+        Temperature1 = ((ADCW*4.88)/10)+3;  
+        
+       
+        
+        if (Temperature1 > setpoint)
+        {
+            check_gsm();
+            sendSMS(); 
+            
+        }
+         
+         ADCSRA |= (1<<ADIF); // reset ADIF   
+          
+        for(i=0; i<60; i++) //minute delay
+           {
+           delay_ms(1000);
+           
+           }
+        
+        //=============== Temperature rate 
+            
+        
+        ADCSRA |= (1<<ADSC); 
+        while (!(ADCSRA & (1<<ADIF)));
+        Temperature2 = ((ADCW*4.88)/10)+3; 
+        ADCSRA |= (1<<ADIF); 
+        rate = Temperature2 - Temperature1;
+        
+        
+        if(rate > rate_threshold)
+        {   
+             lcd_clear();
+             rate_SMS();
+        }
+             
+            delay_ms(3000);
+            
+        if(Temperature2 > setpoint)
+        {   
+             lcd_clear();
+             Temperature1 = Temperature2;
+             sendSMS();
+             lcd_clear();
+             
+        }
+             delay_ms(3000);           
+       
+    }
+          
+} 
